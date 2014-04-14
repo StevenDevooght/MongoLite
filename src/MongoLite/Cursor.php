@@ -42,6 +42,8 @@ class Cursor implements \Iterator{
      */
     protected $sort;
 
+    protected $population = array();
+    
     /**
      * Constructor
      *
@@ -137,6 +139,21 @@ class Cursor implements \Iterator{
     }
 
     /**
+     * Populate document property with another collection
+     *
+     * @param string $property
+     * @param string $collectionName
+     * @return object
+     */
+    public function populate($property, $collectionName) {
+        $this->population[] = array(
+            'property' => $property,
+            'collectionName' => $collectionName);
+        
+        return $this;
+    }
+    
+    /**
      * Get documents matching criteria
      *
      * @return array
@@ -187,6 +204,15 @@ class Cursor implements \Iterator{
             $documents[] = json_decode($doc["document"], true);
         }
 
+        foreach ($this->population as $population) {
+            (new DocumentPopulator(
+                    $documents,
+                    $population["property"],
+                    // use the same database as the root document for now.
+                    $this->collection->database,
+                    $population["collectionName"]))->populate();
+        }
+        
         return $documents;
     }
 
@@ -222,5 +248,82 @@ class Cursor implements \Iterator{
 
         return isset($this->data[$this->position]);
     }
+    
+}
 
+/**
+ * Document populator populates a document property with another document based on the _id.
+ */
+class DocumentPopulator {
+    
+    public $documents;
+    private $documentProperty;
+    private $database;
+    private $collection;
+    
+    public function __construct(&$documents, $documentProperty, $database, $collection) {
+        $this->documents = &$documents;
+        $this->documentProperty = $documentProperty;
+        $this->database = $database;
+        $this->collection = $collection;
+    }
+    
+    public function populate() {
+        $identifiers = $this->constructIdentifiers();
+        $populationData = $this->fetchPopulationData($identifiers);
+        $this->populateDocuments($populationData);
+    }
+
+    private function constructIdentifiers() {
+        $populationIdentifiers = array();
+        foreach($this->documents as $doc) {
+            if(isset($doc[$this->documentProperty])) {
+                if(is_array($doc[$this->documentProperty])) {
+                    foreach($doc[$this->documentProperty] as $property) {
+                        $populationIdentifiers[] = $property;
+                    }
+                } else {
+                    $populationIdentifiers[] = $doc[$this->documentProperty];
+                }
+            }
+        }
+        
+        return $populationIdentifiers;
+    }
+    
+    private function fetchPopulationData($populationIdentifiers) {
+        $collection = new Collection($this->collection, $this->database);
+        return $collection->find(['_id' => ['$in' => $populationIdentifiers]])->toArray();
+    }
+    
+    private function populateDocuments($populationData) {
+        foreach($this->documents as &$doc) {
+            if(isset($doc[$this->documentProperty])) {
+                $result =  $this->populateDocument($doc, $populationData);
+                $doc[$this->documentProperty] = $result;
+            }
+        }
+    }
+    
+    private function populateDocument(&$document, $populationData) {
+        if(is_array($document[$this->documentProperty])) {
+            $result = array();
+            foreach($document[$this->documentProperty] as $relation) {
+                $result[] = $this->findIdentifierInPopulationData($populationData, $relation);
+            }
+
+            return $result;
+        } else {
+            return $this->findIdentifierInPopulationData($populationData, $document[$this->documentProperty]);
+        }
+    }
+    
+    private function findIdentifierInPopulationData($populationData, $identifier) {
+        foreach ($populationData as $population) {
+            if($population["_id"] == $identifier) {
+                return $population;
+            }
+        }
+    }
+    
 }
